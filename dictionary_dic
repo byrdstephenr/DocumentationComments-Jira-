@@ -1,0 +1,10 @@
+documentation_dict = {
+	"Dict_1": {
+		"Documentation 1": "https://example.com",
+		"Documentation 2": "https://googledocs.com",
+	},
+	"ACH Direct Deposit Research": {
+		"Documentation 3": "https://googlesheets.com",
+		"Documentation 4": "https://confluence.com",
+	},
+}
