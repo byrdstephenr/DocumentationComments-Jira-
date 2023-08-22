@@ -1,0 +1,318 @@
+import requests
+import base64
+from documentation_dict import *
+from jira import JIRA
+
+
+def get_ticket_info(jql_query, jira_url, api_token, jira_username):
+    """
+    Retrieve ticket information from Jira using a JQL query.
+
+    Args:
+        jql_query (str): The JQL query to search for tickets in Jira.
+        jira_url (str): The URL of the Jira instance.
+        api_token (str): The API token for authentication with Jira.
+        jira_username (str): The username for authentication with Jira.
+
+    Returns:
+        str: The ticket number of research tickets. Returns None if no ticket is found.
+    """
+
+    ticket_info_dict = {}  # Dictionary to store ticket number and research type
+
+    # Set up the API endpoint for JQL search
+    api_endpoint = f"{jira_url}/rest/api/3/search"
+
+    # Encode credentials for authentication
+    credentials = f"{jira_username}:{api_token}"
+    base64_credentials = base64.b64encode(credentials.encode()).decode()
+
+    # Set up the authentication headers with base64-encoded credentials
+    headers = {
+        "Authorization": f"Basic {base64_credentials}"
+    }
+
+    # Set up the JQL query parameters and specify the fields you want to retrieve
+    params = {
+        "jql": jql_query,
+        # "fields": "key, summary, custom_fields"
+    }
+
+    try:
+        # Make the GET request to perform the JQL search
+        jql_response = requests.get(api_endpoint, headers=headers, params=params)
+        api_response = jql_response.json()
+        # print(api_response)
+
+        if jql_response.status_code == 200:
+            for issue in api_response["issues"]:
+                ticket_id = issue["id"]
+                ticket_number = issue["key"]
+                research_type = issue["fields"].get("customfield_13427", {})
+                research_type_value = research_type.get("value", "None")
+
+                # Add ticket number and research type to the dictionary
+                # ticket_info_dict[ticket_number] = research_type_value
+                ticket_info_dict[ticket_number] = research_type_value
+
+
+            # Return the dictionary with ticket numbers and research types as key-value pairs
+            return ticket_info_dict
+
+        else:
+            # Handle errors if the JQL search request is unsuccessful
+            print(f"get_ticket_info -- JQL Error: {jql_response.status_code}, {api_response.get('errorMessages', 'Unknown error')}")
+            error_message = f"get_ticket_info -- A JQL Error Occurred:\n {jql_response.status_code}, {api_response.get('errorMessages', 'Unknown error')}"
+
+            # Send the error message to Slack
+            slack_error_notification(error_message)
+            return {}
+
+    except requests.exceptions.RequestException as e:
+        # Handle exceptions related to the HTTP request
+        print(f"get_ticket_info -- Request Error: {e}")
+        error_message = f"get_ticket_info -- An error occurred:\n Request Error: {e}"
+
+        # Send the error message to Slack
+        slack_error_notification(error_message)
+        return {}
+
+
+def get_comments(ticket_number, jira_url, jira_username, api_token):
+    try:
+        # Initialize the JIRA client with authentication credentials
+        jira = JIRA(server=jira_url, basic_auth=(jira_username, api_token))
+
+        # Use the expand parameter to retrieve the rendered body of comments
+        comments = jira.comments(ticket_number, expand="renderedBody")
+
+        comment_texts = []  # Create an empty list to store comment texts
+
+        for comment in comments:
+            # The text of the comment is in the renderedBody field
+            comment_text = comment.renderedBody
+            comment_texts.append(comment_text)  # Add comment text to the list
+
+        return comment_texts  # Return the list of comment texts after processing all comments
+
+    except Exception as e:
+        # Handle exceptions related to the JIRA client
+        print(f"get_comments -- Error: {e}")
+        error_message = f"get_comments -- An error occurred:\n Error: {e}"
+
+        # Send the error message to Slack
+        slack_error_notification(error_message)
+        return []
+
+
+def transition_ticket(ticket_number, jira_url, api_token, jira_username, transitions_id):
+    """
+    Transition a Jira ticket to the specified status.
+
+    Args:
+        ticket_number (str): The ticket number to be transitioned.
+        jira_url (str): The URL of the Jira instance.
+        api_token (str): The API token for authentication with Jira.
+        jira_username (str): The username for authentication with Jira.
+        transitions_id (str): The ID of the transition to perform.
+
+    Returns:
+        bool: True if the transition was successful, False otherwise.
+    """
+    # Set up the API endpoint for transitioning the ticket
+    transition_endpoint = f"{jira_url}/rest/api/3/issue/{ticket_number}/transitions"
+
+    # Encode credentials for authentication
+    credentials = f"{jira_username}:{api_token}"
+    base64_credentials = base64.b64encode(credentials.encode()).decode()
+
+    headers = {
+        "Authorization": f"Basic {base64_credentials}",
+        "Content-Type": "application/json",
+    }
+
+    # Set up the request body with the transition ID
+    data = {
+        "transition": {"id": transitions_id}
+    }
+
+    try:
+        # Make the POST request to perform the ticket transition
+        transition_response = requests.post(transition_endpoint, headers=headers, json=data)
+
+        # Check if the request was successful (HTTP status code 204)
+        if transition_response.status_code == 204:
+            print(f"Successfully transitioned ticket {ticket_number} to the requested status.")
+            return True
+        else:
+            print(f"transition_ticket -- Failed to transition ticket {ticket_number}. Status code: {transition_response.status_code}, Response: {transition_response.text}")
+            error_message = f"transition_ticket -- An Error Occurred:\n Failed to transition ticket {ticket_number}. Status code: {transition_response.status_code}, Response: {transition_response.text}"
+
+            # Send the error message to Slack
+            slack_error_notification(error_message)
+
+            return False
+
+    except requests.exceptions.RequestException as e:
+        # Handle exceptions related to the HTTP request
+        print(f"Request Error: {e}")
+        error_message = f"transition_ticket -- An error occurred:\n Request Error: {e}"
+
+        # Send the error message to Slack
+        slack_error_notification(error_message)
+        return False
+
+
+def add_comment(ticket_number, research_type, jira_url, api_token, jira_username):
+    """
+    Add a comment to a Jira ticket using python-jira library and include documentation links based on the research type.
+
+    Args:
+        ticket_number (str): The ticket number to add the comment to.
+        research_type (str): Used to find corresponding documentation links in the documentation_dict.
+        jira_url (str): The URL of the Jira instance.
+        api_token (str): The API token for authentication with Jira.
+        jira_username (str): The username for authentication with Jira.
+
+    Returns:
+        bool: True if the comment was added successfully, False otherwise.
+    """
+    try:
+        # Initialize the JIRA client with authentication credentials
+        jira = JIRA(server=jira_url, basic_auth=(jira_username, api_token))
+
+        # Check if the research type exists in the documentation dictionary
+        if research_type in documentation_dict:
+            documentation_links = documentation_dict[research_type]
+
+            documentation_list = []
+            for doc_text, doc_link in documentation_links.items():
+                # Format the documentation link using Jira's Wiki-style markup for external links
+                link_markup = f"[{doc_text}|{doc_link}]"
+                documentation_list.append(link_markup)
+                
+            comment_body = f"This documentation relates to this research type:\n\n" + "\n".join(documentation_list)
+            
+        else:
+            # If the research type is not found in the documentation dictionary, create a comment without links
+            comment_body = "No documentation links are available for this research type."
+
+        # Make the POST request to add the comment
+        jira.add_comment(ticket_number, comment_body, is_internal=True)
+
+        print(f"Comment added successfully to ticket {ticket_number}.")
+        return True
+
+    except Exception as e:
+        # Handle exceptions related to the JIRA client
+        print(f"Error: {e}")
+        error_message = f"add_comment -- An error occurred:\n Error: {e}"
+
+        # Send the error message to Slack
+        slack_error_notification(error_message)
+        return False
+
+
+def slack_error_notification(error_message):
+    """
+        Send an error message to a specified Slack channel.
+
+        This function sends an error message to a designated Slack channel to notify about script failures or errors.
+
+        Args:
+            error_message (str): The error message that you want to send to Slack.
+
+        Returns:
+            None
+        """
+
+    SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/your_slack_credentials"
+    payload = {
+        "text": error_message,
+        'channel': '#jira-automation-failures',
+    }
+    try:
+        response = requests.post(SLACK_WEBHOOK_URL, json=payload)
+        if response.status_code != 200:
+            print("Error sending Slack notification:", response.text)
+        else:
+            print("Notification of error sent")
+    except Exception as e:
+        print("Error sending Slack notification:", e)
+
+
+def slack_notification():
+    """
+       Send a success message to a specified Slack channel.
+
+       This function sends a success message to a designated Slack channel to notify about the successful execution of the script.
+
+       Returns:
+           None
+       """
+
+    SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/your_slack_credentials"
+    payload = {
+        "text": "Jira Automation Script has run successfully",
+        'channel': '#jira-automation-alert',
+    }
+    try:
+        response = requests.post(SLACK_WEBHOOK_URL, json=payload)
+        if response.status_code != 200:
+            print("Error sending Slack notification:", response.text)
+        else:
+            print("Notification of success sent")
+    except Exception as e:
+        print("Error sending Slack notification:", e)
+
+
+def main(jql_query, jira_url, api_token, jira_username, CTS_TRANSITION, GCPS_TRANSITION):
+    """
+    Main function to process tickets, check for documentation, and transition them if needed.
+
+    Args:
+        jql_query (str): The JQL query to search for tickets in Jira.
+        jira_url (str): The URL of the Jira instance.
+        api_token (str): The API token for authentication with Jira.
+        jira_username (str): The username for authentication with Jira.
+        CTS_TRANSITION (str): The transition ID for CTS tickets.
+        GCPS_TRANSITION (str): The transition ID for GCPS tickets.
+    """
+
+    try:
+        ticket_info_dict = get_ticket_info(jql_query, jira_url, api_token, jira_username)
+
+        for ticket_number, research_type in ticket_info_dict.items():
+            # Step 1: Get the ticket number and research type (already done)
+            print(f"Processing Ticket: {ticket_number} - Research Type: {research_type}")
+
+            # Step 2: Get the comment texts
+            comment_texts = get_comments(ticket_number, jira_url, jira_username, api_token)
+
+            # Step 3: Analyze the comments for existing documentation links
+            documentation_found = False
+            for comment_text in comment_texts:
+                for doc_text in documentation_dict:
+                    if doc_text in comment_text:
+                        documentation_found = True
+                        print("No documentation commented, not moving ticket.")
+                        slack_notification()
+                        break
+
+            # Step 4: If no documentation links found, add them to the ticket
+            if not documentation_found:
+                add_result = add_comment(ticket_number, research_type, jira_url, api_token, jira_username)
+                if add_result:
+                    # Step 5: Transition the ticket (you'll need to specify the desired transition ID)
+                    if ticket_number.split("-")[0] == "CTS":
+                        transition_ticket(ticket_number, jira_url, api_token, jira_username, CTS_TRANSITION)
+                    else:
+                        transition_ticket(ticket_number, jira_url, api_token, jira_username, GCPS_TRANSITION)
+                slack_notification()
+
+    except Exception as e:
+        error_message = f"main -- An error occurred:\n Error: {e}"
+
+        # Send the error message to Slack
+        slack_error_notification(error_message)
+        print("-" * 50)
