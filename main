@@ -1,0 +1,32 @@
+from jira_functions import *
+import time
+from datetime import datetime, time as dt_time
+
+
+while True:
+    # Define the start and stop times
+    start_time = dt_time(9, 3)  # 9:03 AM
+    stop_time = dt_time(17, 27)  # 5:27 PM
+
+    # Calculate the time until the next start time
+    current_time = datetime.now().time()
+    time_until_start = datetime.combine(datetime.today(), start_time) - datetime.combine(datetime.today(), current_time)
+
+    # Calculate the time until the stop time
+    time_until_stop = datetime.combine(datetime.today(), stop_time) - datetime.combine(datetime.today(), current_time)
+
+    # If the current time is after the stop time, then the script should not run today
+    if time_until_stop.total_seconds() < 0:
+        pass
+    else:
+        # If the current time is before the start time, wait until the start time
+        if time_until_start.total_seconds() > 0:
+            print(f"Waiting for {time_until_start} until script start.")
+            time.sleep(time_until_start.total_seconds())
+
+        # Run the main function repeatedly until the stop time
+        while datetime.now().time() <= stop_time:
+            main(jql_query=jql_query, jira_url=JIRA_URL, api_token=API_TOKEN, jira_username=JIRA_USERNAME, transition_id=TRANSITION_ID)
+            time.sleep(43 * 60)  # Sleep for 43 minutes before running the main function again
+
+        print("Script has reached stop time.")
